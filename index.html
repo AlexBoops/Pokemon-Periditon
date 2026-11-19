@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1.0">
+  <title>Google Docs</title>
+  <link rel="icon" href="https://ssl.gstatic.com/docs/documents/images/kix-favicon7.ico">
+  <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body, #canvas {
+      width: 100%;
+      height: 100%;
+      border: 0;
+      overflow: hidden;
+      background-color: #000;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+
+    body {
+      touch-action: none;
+      user-select: none;
+    }
+
+    #canvas {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      display: block;
+      outline: none;
+    }
+
+    #hud-bar {
+      position: fixed;
+      top: 12px;
+      right: 12px;
+      display: flex;
+      gap: 8px;
+      z-index: 999999;
+      opacity: 0.45;
+      transition: opacity 0.2s ease;
+    }
+
+    #hud-bar:hover {
+      opacity: 1;
+    }
+
+    .hud-btn {
+      background-color: #111;
+      color: #fff;
+      border: 2px solid #dc2626;
+      font-size: 11px;
+      font-family: 'Audiowide', sans-serif;
+      padding: 6px 12px;
+      cursor: pointer;
+      border-radius: 6px;
+      letter-spacing: 0.8px;
+      box-shadow: 0 0 8px rgba(220, 38, 38, 0.45);
+      transition: all 0.2s ease;
+    }
+
+    .hud-btn:hover {
+      background: #dc2626;
+      color: #fff;
+      box-shadow: 0 0 14px #dc2626;
+    }
+
+    #status {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.94);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      z-index: 20;
+      padding: 20px;
+      text-align: center;
+      transition: opacity 0.3s ease;
+    }
+
+    #loader-title {
+      font-family: 'Audiowide', sans-serif;
+      font-size: 28px;
+      letter-spacing: 2px;
+      color: #ef4444;
+      text-shadow: 0 0 12px rgba(239, 68, 68, 0.45);
+      margin-bottom: 6px;
+    }
+
+    #loader-sub {
+      font-size: 13px;
+      color: #9ca3af;
+      margin-bottom: 22px;
+    }
+
+    #progress-track {
+      width: min(440px, 84vw);
+      height: 14px;
+      background: #1a1a1a;
+      border: 2px solid #dc2626;
+      border-radius: 999px;
+      overflow: hidden;
+      box-shadow: 0 0 12px rgba(220, 38, 38, 0.25);
+    }
+
+    #progress-fill {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, #991b1b, #ef4444);
+      transition: width 0.12s ease-out;
+    }
+
+    #loader-status {
+      margin-top: 10px;
+      font-size: 12px;
+      font-family: monospace;
+      color: #d1d5db;
+    }
+
+    #status-notice {
+      display: none;
+      margin-top: 14px;
+      max-width: min(520px, 88vw);
+      background-color: #5b3943;
+      border-radius: 0.5rem;
+      border: 1px solid #9b3943;
+      color: #e0e0e0;
+      line-height: 1.4;
+      padding: 1rem;
+      text-align: center;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div id="hud-bar">
+    <button class="hud-btn" id="btn-ab" onclick="openCloaked()">about:blank</button>
+    <button class="hud-btn" id="btn-fs" onclick="toggleFullscreen()">Fullscreen</button>
+  </div>
+
+  <canvas id="canvas" tabindex="-1">Your browser does not support the canvas tag.</canvas>
+
+  <div id="status">
+    <div id="loader-title">POKEPASTA PERDITION</div>
+    <div id="loader-sub">V. 1.5.1 &bull; Godot WebGL Port</div>
+    <div id="progress-track">
+      <div id="progress-fill"></div>
+    </div>
+    <div id="loader-status">Initializing...</div>
+    <div id="status-notice"></div>
+  </div>
+
+  <script>
+    (function () {
+      "use strict";
+
+      const BASE_URL = new URL(".", window.location.href).href.replace(/\/$/, "");
+      const EXEC_NAME = "Pokepasta Perdition - V. 1.5.1";
+      const PCK_PARTS = 15; // .pck.part01 .. .pck.part15
+      const WASM_PARTS = 2; // .wasm.part1 .. .wasm.part2
+      const PCK_SIZE = 293635676;
+      const WASM_SIZE = 35740641;
+
+      const progressFill = document.getElementById("progress-fill");
+      const statusText = document.getElementById("loader-status");
+      const statusOverlay = document.getElementById("status");
+      const statusNotice = document.getElementById("status-notice");
+
+      function assetUrl(filename) {
+        return `${BASE_URL}/${encodeURIComponent(filename)}`;
+      }
+
+      // 1. Web Audio Auto-Unlock
+      const audioCtxs = [];
+      const OrigAudioContext = window.AudioContext || window.webkitAudioContext;
+      if (OrigAudioContext) {
+        const PatchedAudioContext = function (opts) {
+          const ctx = new OrigAudioContext(opts);
+          audioCtxs.push(ctx);
+          return ctx;
+        };
+        PatchedAudioContext.prototype = OrigAudioContext.prototype;
+        window.AudioContext = PatchedAudioContext;
+        if (window.webkitAudioContext) window.webkitAudioContext = PatchedAudioContext;
+
+        const resumeAll = () => {
+          audioCtxs.forEach((c) => {
+            if (c && c.state === "suspended") c.resume().catch(() => {});
+          });
+        };
+        window.addEventListener("pointerdown", resumeAll, { passive: true });
+        window.addEventListener("keydown", resumeAll, { passive: true });
+      }
+
+      // 2. Pointer Lock Error Guard
+      const origLock = Element.prototype.requestPointerLock || function () {};
+      Element.prototype.requestPointerLock = function () {
+        try {
+          const res = origLock.apply(this, arguments);
+          if (res && typeof res.catch === "function") res.catch(() => {});
+          return res;
+        } catch (e) {}
+      };
+
+      // 3. In-Memory Reassembled .wasm & .pck fetch() Interceptor
+      const nativeFetch = window.fetch.bind(window);
+      let reassembledPckBuffer = null;
+      let reassembledWasmBuffer = null;
+
+      window.fetch = function (input, init) {
+        const rawUrl = typeof input === "string" ? input : (input && input.url) || String(input);
+        let decodedUrl = rawUrl;
+        try { decodedUrl = decodeURIComponent(rawUrl); } catch (e) {}
+
+        if (reassembledPckBuffer && decodedUrl.endsWith(`${EXEC_NAME}.pck`)) {
+          return Promise.resolve(
+            new Response(reassembledPckBuffer, {
+              status: 200,
+              statusText: "OK",
+              headers: {
+                "Content-Type": "application/octet-stream",
+                "Content-Length": String(PCK_SIZE)
+              }
+            })
+          );
+        }
+
+        if (reassembledWasmBuffer && decodedUrl.endsWith(`${EXEC_NAME}.wasm`)) {
+          return Promise.resolve(
+            new Response(reassembledWasmBuffer, {
+              status: 200,
+              statusText: "OK",
+              headers: {
+                "Content-Type": "application/wasm",
+                "Content-Length": String(WASM_SIZE)
+              }
+            })
+          );
+        }
+
+        return nativeFetch(input, init);
+      };
+
+      function showNotice(err) {
+        console.error(err);
+        const msg = err instanceof Error ? err.message : String(err);
+        statusNotice.textContent = msg;
+        statusNotice.style.display = "block";
+      }
+
+      async function downloadAndStitchChunks() {
+        const totalChunks = PCK_PARTS + WASM_PARTS;
+        let completed = 0;
+
+        const fetchPart = (filename) =>
+          nativeFetch(assetUrl(filename)).then(async (res) => {
+            if (!res.ok) throw new Error(`Failed to fetch ${filename} (HTTP ${res.status})`);
+            const buf = await res.arrayBuffer();
+            completed++;
+            const pct = Math.round((completed / totalChunks) * 75);
+            progressFill.style.width = `${pct}%`;
+            statusText.textContent = `Downloading game data (${completed}/${totalChunks})...`;
+            return new Uint8Array(buf);
+          });
+
+        const pckTasks = Array.from({ length: PCK_PARTS }, (_, i) => {
+          const num = String(i + 1).padStart(2, "0");
+          return fetchPart(`${EXEC_NAME}.pck.part${num}`);
+        });
+
+        const wasmTasks = Array.from({ length: WASM_PARTS }, (_, i) => {
+          return fetchPart(`${EXEC_NAME}.wasm.part${i + 1}`);
+        });
+
+        const [pckParts, wasmParts] = await Promise.all([
+          Promise.all(pckTasks),
+          Promise.all(wasmTasks)
+        ]);
+
+        const concat = (parts) => {
+          const total = parts.reduce((sum, p) => sum + p.byteLength, 0);
+          const merged = new Uint8Array(total);
+          let offset = 0;
+          for (const p of parts) {
+            merged.set(p, offset);
+            offset += p.byteLength;
+          }
+          return merged.buffer;
+        };
+
+        reassembledPckBuffer = concat(pckParts);
+        reassembledWasmBuffer = concat(wasmParts);
+      }
+
+      // 4. HUD Controls (about:blank Cloaker & Fullscreen)
+      window.openCloaked = function () {
+        const btn = document.getElementById("btn-ab");
+        const win = window.open("about:blank", "_blank");
+        if (!win || win.closed) {
+          btn.textContent = "Allow Popups!";
+          setTimeout(() => { btn.textContent = "about:blank"; }, 3000);
+          return;
+        }
+        const clone = document.documentElement.cloneNode(true);
+        const ab = clone.querySelector("#btn-ab");
+        if (ab) ab.remove();
+
+        const head = clone.querySelector("head");
+        if (head) {
+          const base = document.createElement("base");
+          base.href = BASE_URL + "/";
+          head.insertBefore(base, head.firstChild);
+        }
+
+        win.document.open();
+        win.document.write("<!DOCTYPE html>\n" + clone.outerHTML);
+        win.document.close();
+      };
+
+      window.toggleFullscreen = function () {
+        if (!document.fullscreenElement) {
+          document.documentElement.requestFullscreen().catch(() => {});
+        } else {
+          document.exitFullscreen().catch(() => {});
+        }
+      };
+
+      // 5. Boot Godot Engine
+      (async function boot() {
+        try {
+          statusText.textContent = `Downloading game data (0/${PCK_PARTS + WASM_PARTS})...`;
+          await downloadAndStitchChunks();
+
+          statusText.textContent = "Loading Godot runtime...";
+          progressFill.style.width = "80%";
+
+          const runtimeScript = document.createElement("script");
+          runtimeScript.src = assetUrl(`${EXEC_NAME}.js`);
+          runtimeScript.onload = () => {
+            const pckBlobUrl = URL.createObjectURL(
+              new Blob([reassembledPckBuffer], { type: "application/octet-stream" })
+            );
+
+            const GODOT_CONFIG = {
+              args: [],
+              canvasResizePolicy: 2,
+              emscriptenPoolSize: 8,
+              ensureCrossOriginIsolationHeaders: false,
+              executable: EXEC_NAME,
+              experimentalVK: false,
+              fileSizes: {
+                [`${EXEC_NAME}.pck`]: PCK_SIZE,
+                [`${EXEC_NAME}.wasm`]: WASM_SIZE
+              },
+              focusCanvas: true,
+              gdextensionLibs: [],
+              godotPoolSize: 4,
+              mainPack: pckBlobUrl
+            };
+
+            const engine = new Engine(GODOT_CONFIG);
+            engine.startGame({
+              onProgress: function (current, total) {
+                if (current > 0 && total > 0) {
+                  const pct = Math.round(80 + (current / total) * 20);
+                  progressFill.style.width = `${pct}%`;
+                  statusText.textContent = `Starting WebGL engine (${pct}%)...`;
+                }
+              }
+            }).then(() => {
+              URL.revokeObjectURL(pckBlobUrl);
+              reassembledPckBuffer = null;
+              reassembledWasmBuffer = null;
+              statusOverlay.style.opacity = "0";
+              setTimeout(() => statusOverlay.remove(), 300);
+              document.getElementById("canvas").focus();
+            }, showNotice);
+          };
+          runtimeScript.onerror = () => showNotice(`Failed to load ${EXEC_NAME}.js.`);
+          document.body.appendChild(runtimeScript);
+        } catch (err) {
+          showNotice(err);
+        }
+      })();
+    })();
+  </script>
+</body>
+</html>
